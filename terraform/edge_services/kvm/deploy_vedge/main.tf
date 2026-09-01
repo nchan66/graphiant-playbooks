@@ -21,31 +21,51 @@ provider "libvirt" {
 locals {
   is_devtest = var.mode == "devtest"
 
-  # GNOS assigns interface roles positionally, so NIC order is a contract. It
-  # matches the AWS/Azure vEdge modules:
-  #   production : mgmt=0, wan=1, lan=2
-  #   devtest    : cloud-init=0, mgmt=1, wan=2, lan=3
-  roles = local.is_devtest ? ["cloud_init", "mgmt", "wan", "lan"] : ["mgmt", "wan", "lan"]
+  # Every interface either attaches to a host bridge you name, or - when you
+  # leave that setting empty - to a libvirt network this module creates. That is
+  # the difference between Option B (existing bridges) and Option A (nothing
+  # pre-configured on the host) in the README.
+  create_mgmt_net = var.mgmt_bridge == ""
+  create_wan_net  = length(var.wan_bridges) == 0
+  create_lan_nets = var.lan_bridge == ""
 
-  # Each role either attaches to an existing host bridge, or gets a libvirt NAT
-  # network created from its prefix. Static IPs only apply to created networks,
-  # since a host bridge is addressed by the external network.
-  networking = {
-    cloud_init = { bridge = var.cloud_init_bridge, prefix = var.cloud_init_network_prefix, ip = var.cloud_init_static_ip }
-    mgmt       = { bridge = var.mgmt_bridge, prefix = var.mgmt_network_prefix, ip = var.mgmt_static_ip }
-    wan        = { bridge = var.wan_bridge, prefix = var.wan_network_prefix, ip = var.wan_static_ip }
-    lan        = { bridge = var.lan_bridge, prefix = var.lan_network_prefix, ip = var.lan_static_ip }
-  }
+  # NIC order is a contract with GNOS, which assigns interface roles positionally:
+  #
+  #   mgmt, wan1, local-mgmt, wan2..wanN, lan1..lanN
+  #
+  # The first ISP WAN is the VPP interface oss-agent uses to onboard, and GNOS
+  # serves its local web server on the local-mgmt interface.
+  nics = concat(
+    [{
+      label      = "mgmt"
+      bridge     = local.create_mgmt_net ? null : var.mgmt_bridge
+      network_id = local.create_mgmt_net ? libvirt_network.mgmt[0].id : null
+    }],
+    [{
+      label      = "wan1"
+      bridge     = local.create_wan_net ? null : var.wan_bridges[0]
+      network_id = local.create_wan_net ? libvirt_network.wan[0].id : null
+    }],
+    var.enable_local_mgmt ? [{
+      label      = "local-mgmt"
+      bridge     = null
+      network_id = libvirt_network.local_mgmt[0].id
+    }] : [],
+    local.create_wan_net ? [] : [
+      for i, b in slice(var.wan_bridges, 1, length(var.wan_bridges)) : {
+        label      = "wan${i + 2}"
+        bridge     = b
+        network_id = null
+      }
+    ],
+    [for i in range(var.lan_count) : {
+      label      = "lan${i + 1}"
+      bridge     = local.create_lan_nets ? null : var.lan_bridge
+      network_id = local.create_lan_nets ? libvirt_network.lan[i].id : null
+    }]
+  )
 
-  managed_networks = { for r in local.roles : r => local.networking[r] if local.networking[r].bridge == "" }
-
-  # Ordered NICs for the domain. A null attribute is unset, so each NIC resolves
-  # to either a bridge or a created network.
-  nics = [for r in local.roles : {
-    bridge     = local.networking[r].bridge != "" ? local.networking[r].bridge : null
-    network_id = local.networking[r].bridge == "" ? libvirt_network.this[r].id : null
-    addresses  = local.networking[r].bridge == "" && local.networking[r].ip != "" ? [local.networking[r].ip] : null
-  }]
+  lan_network_id = local.create_lan_nets ? try(libvirt_network.lan[0].id, null) : null
 
   # Cloud-init user data. Matches the graphnos block that deploy_gnos_edge.sh
   # writes on Graphiant hypervisors: role first, then the onboarding endpoints
@@ -85,7 +105,7 @@ locals {
   # The provider attaches the cloud-init ISO as an IDE CD-ROM, but q35 has no IDE
   # controller, so libvirt rejects the domain with "IDE controllers are unsupported
   # for this QEMU binary or machine type". virt-install puts the CD-ROM on SATA for
-  # q35 (deploy_gnos_edge.sh uses --machine q35 with --cdrom); do the same here.
+  # q35; do the same here.
   cdrom_sata_xslt = <<-XSLT
     <?xml version="1.0" ?>
     <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
@@ -101,15 +121,24 @@ locals {
 }
 
 # -----------------------------------------------------------------------------
-# Networks — one per role that has no host bridge
+# Networks
+#
+# Created only for interfaces where no host bridge was given. The mgmt and WAN
+# networks are NAT so the vEdge can reach the Graphiant backbone with no host
+# networking prepared; LAN networks are isolated, so the vEdge is the only path
+# off the LAN.
+#
+# Note: for isolated LAN networks the Graphiant hypervisor tooling also writes
+# 0x4000 to the bridge's group_fwd_mask so LLDP passes. That is a sysfs write the
+# libvirt provider cannot perform - apply it manually if LLDP is needed:
+#   echo 0x4000 | sudo tee /sys/class/net/<bridge>/bridge/group_fwd_mask
 # -----------------------------------------------------------------------------
-resource "libvirt_network" "this" {
-  for_each = local.managed_networks
+resource "libvirt_network" "mgmt" {
+  count = local.create_mgmt_net ? 1 : 0
 
-  name      = "${var.vm_name}-${replace(each.key, "_", "-")}"
+  name      = "${var.vm_name}-mgmt"
   mode      = "nat"
-  domain    = var.network_domain
-  addresses = [each.value.prefix]
+  addresses = [var.mgmt_network_prefix]
   autostart = true
 
   dhcp {
@@ -119,6 +148,39 @@ resource "libvirt_network" "this" {
   dns {
     enabled = true
   }
+}
+
+resource "libvirt_network" "wan" {
+  count = local.create_wan_net ? 1 : 0
+
+  name      = "${var.vm_name}-wan"
+  mode      = "nat"
+  addresses = [var.wan_network_prefix]
+  autostart = true
+
+  dhcp {
+    enabled = true
+  }
+
+  dns {
+    enabled = true
+  }
+}
+
+resource "libvirt_network" "local_mgmt" {
+  count = var.enable_local_mgmt ? 1 : 0
+
+  name      = "${var.vm_name}_lan_local-mgmt"
+  mode      = "none"
+  autostart = true
+}
+
+resource "libvirt_network" "lan" {
+  count = local.create_lan_nets ? var.lan_count : 0
+
+  name      = "${var.vm_name}_lan_${count.index + 1}"
+  mode      = "none"
+  autostart = true
 }
 
 # -----------------------------------------------------------------------------
@@ -149,8 +211,7 @@ resource "libvirt_volume" "vedge" {
   size           = var.disk_size_gb * 1024 * 1024 * 1024
 }
 
-# Delivered as a CD-ROM, matching virt-install --cdrom cloud.qcow2 on Graphiant
-# hypervisors.
+# Delivered as a CD-ROM, matching virt-install --cdrom on Graphiant hypervisors.
 resource "libvirt_cloudinit_disk" "vedge" {
   name      = "${var.vm_name}-cloudinit.iso"
   pool      = var.storage_pool
@@ -198,7 +259,6 @@ resource "libvirt_domain" "vedge" {
     content {
       bridge     = network_interface.value.bridge
       network_id = network_interface.value.network_id
-      addresses  = network_interface.value.addresses
     }
   }
 
@@ -228,8 +288,13 @@ resource "libvirt_domain" "vedge" {
 }
 
 # -----------------------------------------------------------------------------
-# Test VM (optional) — Debian cloud image on the LAN, default route via the
-# vEdge. Mirrors deploy_test_vm in the AWS/Azure modules.
+# Test VM (optional) — a Debian cloud image on the LAN, statically addressed with
+# its default route via the vEdge, for verifying traffic actually flows through
+# the edge. Mirrors deploy_test_vm in the AWS/Azure modules.
+#
+# Unlike the cloud modules, the vEdge LAN address is not known to Terraform: GNOS
+# manages the LAN under VPP and it is configured from the Graphiant Portal. So
+# test_vm_gateway must be supplied, which makes this a post-onboarding step.
 # -----------------------------------------------------------------------------
 resource "libvirt_volume" "test_vm_base" {
   count = var.deploy_test_vm ? 1 : 0
@@ -247,7 +312,7 @@ resource "libvirt_volume" "test_vm" {
   pool           = var.storage_pool
   format         = "qcow2"
   base_volume_id = libvirt_volume.test_vm_base[0].id
-  size           = var.test_vm_disk_size_gb * 1024 * 1024 * 1024
+  size           = 10 * 1024 * 1024 * 1024
 }
 
 resource "libvirt_cloudinit_disk" "test_vm" {
@@ -268,16 +333,26 @@ resource "libvirt_cloudinit_disk" "test_vm" {
         shell: /bin/bash
         ssh-authorized-keys:
           - ${var.test_vm_ssh_public_key}
-
-    runcmd:
-      - ip route del default || true
-      - ip route add default via ${var.lan_static_ip}
   USERDATA
+
+  # Static addressing: the LAN has no DHCP server, and the default route must
+  # point at the vEdge rather than anything libvirt provides.
+  network_config = <<-NETCFG
+    version: 2
+    ethernets:
+      primary:
+        match:
+          name: "en*"
+        addresses: [${var.test_vm_ip_cidr}]
+        routes:
+          - to: 0.0.0.0/0
+            via: ${var.test_vm_gateway}
+  NETCFG
 
   lifecycle {
     precondition {
-      condition     = var.lan_static_ip != ""
-      error_message = "deploy_test_vm = true requires lan_static_ip, which the test VM uses as its default gateway."
+      condition     = var.test_vm_ip_cidr != "" && var.test_vm_gateway != ""
+      error_message = "deploy_test_vm = true requires test_vm_ip_cidr and test_vm_gateway (the vEdge LAN address configured in Graphiant Portal)."
     }
   }
 }
@@ -286,8 +361,8 @@ resource "libvirt_domain" "test_vm" {
   count = var.deploy_test_vm ? 1 : 0
 
   name      = var.test_vm_name
-  memory    = var.test_vm_memory_mb
-  vcpu      = var.test_vm_vcpus
+  memory    = 1024
+  vcpu      = 1
   machine   = var.machine_type
   autostart = true
 
@@ -302,9 +377,8 @@ resource "libvirt_domain" "test_vm" {
   cloudinit = libvirt_cloudinit_disk.test_vm[0].id
 
   network_interface {
-    bridge     = var.lan_bridge != "" ? var.lan_bridge : null
-    network_id = var.lan_bridge == "" ? libvirt_network.this["lan"].id : null
-    addresses  = var.lan_bridge == "" && var.test_vm_static_ip != "" ? [var.test_vm_static_ip] : null
+    bridge     = local.create_lan_nets ? null : var.lan_bridge
+    network_id = local.lan_network_id
   }
 
   console {

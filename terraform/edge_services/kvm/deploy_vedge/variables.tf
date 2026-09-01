@@ -156,96 +156,68 @@ variable "onboarding_gateway" {
 # -----------------------------------------------------------------------------
 # Networking
 #
-# Per interface role, either set <role>_bridge to attach to an existing host
-# bridge (typical in production), or leave it empty and the module creates a
-# libvirt NAT network from <role>_network_prefix (typical in devtest).
+# NIC order is a contract with GNOS, which assigns interface roles positionally:
 #
-# <role>_static_ip becomes a DHCP reservation on a created network, so it only
-# takes effect if GNOS requests DHCP on that interface - WAN and LAN are managed
-# by VPP and configured from the Graphiant Portal, so reservations there may be
-# inert. It is ignored entirely for bridge-attached interfaces, where the
-# external network does the addressing.
+#   mgmt, wan1, local-mgmt, wan2..wanN, lan1..lanN
+#
+# Each interface either attaches to a host bridge you name, or - when you leave
+# that setting empty - to a libvirt network this module creates. Leaving them all
+# empty deploys a working edge on a hypervisor with no networking prepared.
 # -----------------------------------------------------------------------------
-variable "network_domain" {
-  description = "DNS domain assigned to libvirt networks created by this module"
-  type        = string
-  default     = "graphiant.local"
-}
-
-variable "cloud_init_bridge" {
-  description = "Existing host bridge for the cloud-init interface (devtest only)"
-  type        = string
-  default     = ""
-}
-
-variable "cloud_init_network_prefix" {
-  description = "CIDR for a new cloud-init libvirt network (devtest only)"
-  type        = string
-  default     = "10.20.0.0/24"
-}
-
-variable "cloud_init_static_ip" {
-  description = "DHCP reservation for the cloud-init interface (devtest only)"
-  type        = string
-  default     = ""
-}
-
 variable "mgmt_bridge" {
-  description = "Existing host bridge for the local management interface"
+  description = "Host bridge for the local management interface (NIC 0). Leave empty to have the module create a NAT network for it."
   type        = string
   default     = ""
 }
 
-variable "mgmt_network_prefix" {
-  description = "CIDR for a new management libvirt network"
-  type        = string
-  default     = "10.20.1.0/24"
-}
-
-variable "mgmt_static_ip" {
-  description = "DHCP reservation for the management interface. Closest analog to the edge_mgmt_ipaddr argument of deploy_gnos_edge.sh."
-  type        = string
-  default     = ""
-}
-
-variable "wan_bridge" {
-  description = "Existing host bridge for the WAN interface. In production this is normally the bridge with outbound reachability to the Graphiant backbone."
-  type        = string
-  default     = ""
-}
-
-variable "wan_network_prefix" {
-  description = "CIDR for a new WAN libvirt network"
-  type        = string
-  default     = "10.20.2.0/24"
-}
-
-variable "wan_static_ip" {
-  description = "DHCP reservation for the WAN interface. GNOS manages WAN under VPP, so this may have no effect."
-  type        = string
-  default     = ""
+variable "wan_bridges" {
+  description = "Host bridges for the ISP WAN interfaces, in order; the first is the interface used to onboard. Add a second entry for dual-WAN. Leave the list empty to have the module create a single NAT WAN network."
+  type        = list(string)
+  default     = []
 }
 
 variable "lan_bridge" {
-  description = "Existing host bridge for the LAN (customer ingress) interface"
+  description = "Host bridge shared by all LAN (customer ingress) interfaces. Leave empty to have the module create one isolated network per LAN, so the vEdge is the only path off the LAN."
   type        = string
   default     = ""
 }
 
-variable "lan_network_prefix" {
-  description = "CIDR for a new LAN libvirt network"
-  type        = string
-  default     = "10.20.3.0/24"
+variable "lan_count" {
+  description = "Number of LAN interfaces to attach after the WAN interfaces"
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.lan_count >= 0
+    error_message = "lan_count cannot be negative."
+  }
 }
 
-variable "lan_static_ip" {
-  description = "DHCP reservation for the LAN interface. GNOS manages LAN under VPP, so this may have no effect - verify with `virsh domifaddr` rather than assuming it applied. Required when deploy_test_vm = true, since the test VM uses it as its default gateway."
+variable "enable_local_mgmt" {
+  description = "Create the per-device local-mgmt network and attach it as the NIC immediately after the first ISP WAN. GNOS serves its local web server on this interface."
+  type        = bool
+  default     = true
+}
+
+variable "mgmt_network_prefix" {
+  description = "CIDR for the management NAT network. Only used when mgmt_bridge is empty."
   type        = string
-  default     = ""
+  default     = "10.30.0.0/24"
+}
+
+variable "wan_network_prefix" {
+  description = "CIDR for the WAN NAT network. Only used when wan_bridges is empty."
+  type        = string
+  default     = "10.30.1.0/24"
 }
 
 # -----------------------------------------------------------------------------
 # Test VM (optional)
+#
+# Verifies that traffic actually flows through the vEdge. The vEdge LAN address
+# is configured in the Graphiant Portal and is not known to Terraform, so the
+# test VM is statically addressed and needs test_vm_gateway supplied - deploy it
+# after the edge has onboarded.
 # -----------------------------------------------------------------------------
 variable "deploy_test_vm" {
   description = "Whether to deploy a test VM on the LAN with its default route via the vEdge"
@@ -259,32 +231,20 @@ variable "test_vm_name" {
   default     = "graphiant-vedge-test-vm"
 }
 
-variable "test_vm_vcpus" {
-  description = "Number of vCPUs for the test VM"
-  type        = number
-  default     = 1
-}
-
-variable "test_vm_memory_mb" {
-  description = "Memory for the test VM, in MiB"
-  type        = number
-  default     = 1024
-}
-
-variable "test_vm_disk_size_gb" {
-  description = "Size of the test VM overlay disk, in GiB"
-  type        = number
-  default     = 10
-}
-
 variable "test_vm_image_source" {
   description = "Path or URL to a cloud-init enabled qcow2 for the test VM"
   type        = string
   default     = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"
 }
 
-variable "test_vm_static_ip" {
-  description = "DHCP reservation for the test VM on the LAN network"
+variable "test_vm_ip_cidr" {
+  description = "Static address and prefix for the test VM on the LAN, e.g. \"192.168.100.10/24\". Required when deploy_test_vm = true."
+  type        = string
+  default     = ""
+}
+
+variable "test_vm_gateway" {
+  description = "Default gateway for the test VM: the vEdge LAN address as configured in the Graphiant Portal. Required when deploy_test_vm = true."
   type        = string
   default     = ""
 }

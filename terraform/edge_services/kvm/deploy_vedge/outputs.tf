@@ -14,33 +14,32 @@ output "domain_name" {
 }
 
 output "interface_order" {
-  description = "Ordered interface roles as attached to the domain. GNOS assigns roles positionally, so this is what the appliance sees."
-  value       = local.roles
+  description = "Ordered interface roles as attached to the domain. GNOS assigns roles positionally, so this is what the appliance sees - cross-check with `virsh domiflist <domain_name>`."
+  value       = [for n in local.nics : n.label]
+}
+
+output "networks_created" {
+  description = "Map of interface role to the libvirt network this module created for it. Roles attached to a host bridge are absent, since those bridges are not managed here."
+  value = merge(
+    local.create_mgmt_net ? { mgmt = libvirt_network.mgmt[0].name } : {},
+    local.create_wan_net ? { wan1 = libvirt_network.wan[0].name } : {},
+    var.enable_local_mgmt ? { "local-mgmt" = libvirt_network.local_mgmt[0].name } : {},
+    { for i, n in libvirt_network.lan : "lan${i + 1}" => n.name },
+  )
+}
+
+output "host_bridges_required" {
+  description = "Host bridges this deployment expects to already exist. Empty when the module creates every network itself. Confirm with `ip link show type bridge` before applying."
+  value = concat(
+    local.create_mgmt_net ? [] : [var.mgmt_bridge],
+    var.wan_bridges,
+    local.create_lan_nets ? [] : [var.lan_bridge],
+  )
 }
 
 output "base_volume_id" {
   description = "ID of the GNOS base volume backing the vEdge disk. Pass this as base_volume_id in further deployments to reuse the imported image."
   value       = local.base_volume_id
-}
-
-output "networks_created" {
-  description = "Map of interface role to the libvirt network this module created for it. Bridge-attached roles are absent."
-  value       = { for r, n in libvirt_network.this : r => { name = n.name, addresses = n.addresses } }
-}
-
-output "mgmt_ip" {
-  description = "The mgmt_static_ip requested as a DHCP reservation, or null when unset. This is what was asked for, not what the interface actually holds - confirm with `virsh domifaddr <domain_name>`."
-  value       = var.mgmt_static_ip != "" ? var.mgmt_static_ip : null
-}
-
-output "wan_ip" {
-  description = "The wan_static_ip requested as a DHCP reservation, or null when unset. This is what was asked for, not what the interface actually holds - confirm with `virsh domifaddr <domain_name>`."
-  value       = var.wan_static_ip != "" ? var.wan_static_ip : null
-}
-
-output "lan_ip" {
-  description = "The lan_static_ip requested as a DHCP reservation, or null when unset. GNOS manages the LAN under VPP, so confirm the address the hypervisor observes with `virsh domifaddr <domain_name>` before using it as the vEdge LAN address in Graphiant Portal."
-  value       = var.lan_static_ip != "" ? var.lan_static_ip : null
 }
 
 output "serial_console_command" {
@@ -49,6 +48,6 @@ output "serial_console_command" {
 }
 
 output "test_vm_ip" {
-  description = "Test VM address on the LAN network (only when deploy_test_vm = true and test_vm_static_ip is set)"
-  value       = var.deploy_test_vm && var.test_vm_static_ip != "" ? var.test_vm_static_ip : null
+  description = "Static address of the test VM on the LAN (only when deploy_test_vm = true)"
+  value       = var.deploy_test_vm ? var.test_vm_ip_cidr : null
 }
