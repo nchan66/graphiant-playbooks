@@ -81,6 +81,23 @@ locals {
   user_data = local.is_devtest ? local.user_data_devtest : local.user_data_production
 
   base_volume_id = var.base_volume_id != "" ? var.base_volume_id : try(libvirt_volume.gnos_base[0].id, "")
+
+  # The provider attaches the cloud-init ISO as an IDE CD-ROM, but q35 has no IDE
+  # controller, so libvirt rejects the domain with "IDE controllers are unsupported
+  # for this QEMU binary or machine type". virt-install puts the CD-ROM on SATA for
+  # q35 (deploy_gnos_edge.sh uses --machine q35 with --cdrom); do the same here.
+  cdrom_sata_xslt = <<-XSLT
+    <?xml version="1.0" ?>
+    <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+      <xsl:output omit-xml-declaration="yes" indent="yes"/>
+      <xsl:template match="node()|@*">
+        <xsl:copy><xsl:apply-templates select="node()|@*"/></xsl:copy>
+      </xsl:template>
+      <xsl:template match="/domain/devices/disk[@device='cdrom']/target">
+        <target dev="sda" bus="sata"/>
+      </xsl:template>
+    </xsl:stylesheet>
+  XSLT
 }
 
 # -----------------------------------------------------------------------------
@@ -198,6 +215,10 @@ resource "libvirt_domain" "vedge" {
     autoport       = true
   }
 
+  xml {
+    xslt = local.cdrom_sata_xslt
+  }
+
   lifecycle {
     precondition {
       condition     = !local.is_devtest || var.onboarding_gateway != ""
@@ -290,5 +311,9 @@ resource "libvirt_domain" "test_vm" {
     type        = "pty"
     target_port = "0"
     target_type = "serial"
+  }
+
+  xml {
+    xslt = local.cdrom_sata_xslt
   }
 }
