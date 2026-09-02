@@ -99,9 +99,10 @@ locals {
 
   base_volume_id = var.base_volume_id != "" ? var.base_volume_id : try(libvirt_volume.gnos_base[0].id, "")
 
-  # The provider puts the cloud-init CD-ROM on IDE, which q35 has no controller
-  # for. Move it to SATA, as virt-install does.
-  cdrom_sata_xslt = <<-XSLT
+  # Two things the provider cannot express: the cloud-init CD-ROM lands on IDE,
+  # which q35 has no controller for, and a file disk carries no format, so
+  # libvirt assumes raw and the guest never boots.
+  domain_xslt = <<-XSLT
     <?xml version="1.0" ?>
     <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
       <xsl:output omit-xml-declaration="yes" indent="yes"/>
@@ -110,6 +111,13 @@ locals {
       </xsl:template>
       <xsl:template match="/domain/devices/disk[@device='cdrom']/target">
         <target dev="sda" bus="sata"/>
+      </xsl:template>
+      <xsl:template match="/domain/devices/disk[@device='disk']">
+        <disk>
+          <xsl:apply-templates select="@*"/>
+          <driver name="qemu" type="qcow2"/>
+          <xsl:apply-templates select="node()[not(self::driver)]"/>
+        </disk>
       </xsl:template>
     </xsl:stylesheet>
   XSLT
@@ -268,7 +276,7 @@ resource "libvirt_domain" "vedge" {
   }
 
   xml {
-    xslt = local.cdrom_sata_xslt
+    xslt = local.domain_xslt
   }
 
   lifecycle {
@@ -376,6 +384,6 @@ resource "libvirt_domain" "test_vm" {
   }
 
   xml {
-    xslt = local.cdrom_sata_xslt
+    xslt = local.domain_xslt
   }
 }
