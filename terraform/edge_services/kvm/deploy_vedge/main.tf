@@ -21,10 +21,8 @@ provider "libvirt" {
 locals {
   is_devtest = var.mode == "devtest"
 
-  # Every interface either attaches to a host bridge you name, or - when you
-  # leave that setting empty - to a libvirt network this module creates. That is
-  # the difference between Option B (existing bridges) and Option A (nothing
-  # pre-configured on the host) in the README.
+  # An interface attaches to the host bridge you name, or - if you leave it
+  # empty - to a libvirt network this module creates.
   create_mgmt_net = var.mgmt_bridge == ""
   create_wan_net  = length(var.wan_bridges) == 0
   create_lan_nets = var.lan_bridge == ""
@@ -67,9 +65,8 @@ locals {
 
   lan_network_id = local.create_lan_nets ? try(libvirt_network.lan[0].id, null) : null
 
-  # Cloud-init user data. Matches the graphnos block that deploy_gnos_edge.sh
-  # writes on Graphiant hypervisors: role first, then the onboarding endpoints
-  # (devtest only), then the token.
+  # Cloud-init user data, matching the graphnos block deploy_gnos_edge.sh writes:
+  # role, then the onboarding endpoints (devtest only), then the token.
   user_data_production = <<-USERDATA
     #cloud-config
 
@@ -102,10 +99,8 @@ locals {
 
   base_volume_id = var.base_volume_id != "" ? var.base_volume_id : try(libvirt_volume.gnos_base[0].id, "")
 
-  # The provider attaches the cloud-init ISO as an IDE CD-ROM, but q35 has no IDE
-  # controller, so libvirt rejects the domain with "IDE controllers are unsupported
-  # for this QEMU binary or machine type". virt-install puts the CD-ROM on SATA for
-  # q35; do the same here.
+  # The provider puts the cloud-init CD-ROM on IDE, which q35 has no controller
+  # for. Move it to SATA, as virt-install does.
   cdrom_sata_xslt = <<-XSLT
     <?xml version="1.0" ?>
     <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
@@ -123,15 +118,10 @@ locals {
 # -----------------------------------------------------------------------------
 # Networks
 #
-# Created only for interfaces where no host bridge was given. The mgmt and WAN
-# networks are NAT so the vEdge can reach the Graphiant backbone with no host
-# networking prepared; LAN networks are isolated, so the vEdge is the only path
-# off the LAN.
-#
-# Note: for isolated LAN networks the Graphiant hypervisor tooling also writes
-# 0x4000 to the bridge's group_fwd_mask so LLDP passes. That is a sysfs write the
-# libvirt provider cannot perform - apply it manually if LLDP is needed:
-#   echo 0x4000 | sudo tee /sys/class/net/<bridge>/bridge/group_fwd_mask
+# Created only for interfaces with no host bridge. mgmt and WAN are NAT so the
+# vEdge can reach the backbone unaided; LAN is isolated so the vEdge is the only
+# way off it. LLDP on an isolated LAN needs group_fwd_mask set by hand - see the
+# README.
 # -----------------------------------------------------------------------------
 resource "libvirt_network" "mgmt" {
   count = local.create_mgmt_net ? 1 : 0
@@ -248,8 +238,10 @@ resource "libvirt_domain" "vedge" {
     model           = "tpm-crb"
   }
 
+  # Attach by path, not volume_id: <disk type='volume'> stops libvirt labelling
+  # the qcow2 backing chain, so QEMU cannot open the backing file.
   disk {
-    volume_id = libvirt_volume.vedge.id
+    file = libvirt_volume.vedge.id
   }
 
   cloudinit = libvirt_cloudinit_disk.vedge.id
@@ -288,13 +280,9 @@ resource "libvirt_domain" "vedge" {
 }
 
 # -----------------------------------------------------------------------------
-# Test VM (optional) — a Debian cloud image on the LAN, statically addressed with
-# its default route via the vEdge, for verifying traffic actually flows through
-# the edge. Mirrors deploy_test_vm in the AWS/Azure modules.
-#
-# Unlike the cloud modules, the vEdge LAN address is not known to Terraform: GNOS
-# manages the LAN under VPP and it is configured from the Graphiant Portal. So
-# test_vm_gateway must be supplied, which makes this a post-onboarding step.
+# Test VM (optional) — a Debian cloud image on the LAN, routing via the vEdge.
+# The vEdge LAN address is set in the Graphiant Portal and unknown to Terraform,
+# so test_vm_gateway must be supplied: deploy this after the edge has onboarded.
 # -----------------------------------------------------------------------------
 resource "libvirt_volume" "test_vm_base" {
   count = var.deploy_test_vm ? 1 : 0
@@ -371,7 +359,7 @@ resource "libvirt_domain" "test_vm" {
   }
 
   disk {
-    volume_id = libvirt_volume.test_vm[0].id
+    file = libvirt_volume.test_vm[0].id
   }
 
   cloudinit = libvirt_cloudinit_disk.test_vm[0].id
