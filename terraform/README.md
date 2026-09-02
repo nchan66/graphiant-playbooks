@@ -515,11 +515,13 @@ GNOS boots via **UEFI** and expects an **emulated TPM 2.0**, so the OVMF firmwar
 
 ```bash
 # Debian / Ubuntu
-sudo apt install qemu-kvm libvirt-daemon-system ovmf swtpm swtpm-tools
+sudo apt install qemu-kvm libvirt-daemon-system ovmf swtpm swtpm-tools xsltproc
 
 # RHEL-family
-sudo dnf install qemu-kvm libvirt edk2-ovmf swtpm swtpm-tools
+sudo dnf install qemu-kvm libvirt edk2-ovmf swtpm swtpm-tools libxslt
 ```
+
+`xsltproc` is required on whichever machine runs Terraform: the libvirt provider shells out to it to place the cloud-init CD-ROM on a SATA bus, which q35 requires.
 
 Verify libvirt and the firmware paths:
 

@@ -7,7 +7,7 @@
 # Pre-requisite:
 # ============================================================================
 # 1. A KVM hypervisor with libvirt, OVMF (UEFI) firmware and swtpm:
-#      apt install qemu-kvm libvirt-daemon-system ovmf swtpm swtpm-tools
+#      apt install qemu-kvm libvirt-daemon-system ovmf swtpm swtpm-tools xsltproc
 # 2. Run Terraform on the hypervisor (qemu:///system), or set libvirt_uri to
 #    qemu+ssh://<user>@<host>/system with the SSH user in the 'libvirt' group.
 #    Note that image_source is read by whichever machine runs Terraform.
@@ -68,7 +68,10 @@ onboarding_gateway  = ""
 # means two real ISP WANs, which is wan_ints = 3 there, because that script
 # counts the local-mgmt interface as part of its WAN list.
 # =============================================================================
-mgmt_bridge       = "br0"
+# Measured against a working edge on the sj-dr hypervisors:
+#   sudo virsh domiflist <an-existing-edge>
+# NIC 0 is br3000 there, not the br0 default in deploy_gnos_edge.sh.
+mgmt_bridge       = "br3000"
 wan_bridges       = ["br3001", "br3002"]
 enable_local_mgmt = true
 lan_count         = 3

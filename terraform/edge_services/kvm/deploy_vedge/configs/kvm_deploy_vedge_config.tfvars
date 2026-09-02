@@ -17,8 +17,9 @@
 # ============================================================================
 # 1. A KVM hypervisor with libvirt, OVMF (UEFI) firmware and swtpm. GNOS boots
 #    via UEFI and expects an emulated TPM 2.0, so all three are required:
-#      Debian/Ubuntu : apt install qemu-kvm libvirt-daemon-system ovmf swtpm swtpm-tools
-#      RHEL-family   : dnf install qemu-kvm libvirt edk2-ovmf swtpm swtpm-tools
+#      Debian/Ubuntu : apt install qemu-kvm libvirt-daemon-system ovmf swtpm swtpm-tools xsltproc
+#      RHEL-family   : dnf install qemu-kvm libvirt edk2-ovmf swtpm swtpm-tools libxslt
+#    xsltproc is needed by the libvirt provider on whichever machine runs Terraform.
 #    RHEL-family firmware lives at /usr/share/edk2/ovmf/ - override the paths below.
 # 2. Run Terraform on the hypervisor (qemu:///system), or set libvirt_uri to
 #    qemu+ssh://<user>@<host>/system with the SSH user in the 'libvirt' group.
