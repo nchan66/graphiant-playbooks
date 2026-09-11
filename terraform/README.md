@@ -621,13 +621,32 @@ The WAN bridge needs outbound reachability to the Graphiant backbone: DNS/53, HT
 
 The two options mix freely — each interface is independent, so you can bridge the WAN to your uplink while letting the module create the LAN networks.
 
-Whichever you choose, the per-device `<vm_name>_lan_local-mgmt` network is always created. `terraform output host_bridges_required` lists exactly what this deployment expects to already exist.
+Whichever you choose, the per-device `<vm_name>-local-mgmt` network is always created. `terraform output host_bridges_required` lists exactly what this deployment expects to already exist.
 
 > **LLDP on isolated LAN networks.** If you let the module create LAN networks and need LLDP to pass, write `0x4000` to the bridge's `group_fwd_mask` — a sysfs write the libvirt provider cannot perform:
 > ```bash
 > echo 0x4000 | sudo tee /sys/class/net/<bridge>/bridge/group_fwd_mask
 > ```
 > Find the bridge name with `virsh net-info <network>`.
+
+### Adapting to your hypervisor
+
+Everything host-specific is a variable, so the module assumes no particular distribution or directory layout:
+
+| Variable | Debian / Ubuntu | RHEL-family |
+|----------|-----------------|-------------|
+| `uefi_loader_path` | `/usr/share/OVMF/OVMF_CODE.fd` | `/usr/share/edk2/ovmf/OVMF_CODE.fd` |
+| `uefi_nvram_template_path` | `/usr/share/OVMF/OVMF_VARS.fd` | `/usr/share/edk2/ovmf/OVMF_VARS.fd` |
+| `nvram_dir` | `/var/lib/libvirt/qemu/nvram` | same |
+| `storage_pool` | `default` | whatever `virsh pool-list` shows |
+
+Check yours before the first apply:
+
+```bash
+ls /usr/share/OVMF/ /usr/share/edk2/ovmf/ 2>/dev/null
+virsh pool-list --all
+ip link show type bridge
+```
 
 ### Variables
 
@@ -695,7 +714,7 @@ terraform destroy -var-file="configs/kvm_deploy_vedge_config.tfvars"
 
 ### Dev/test mode (internal use only)
 
-Use `configs/kvm_deploy_vedge_devtest_config.tfvars` with `mode = "devtest"`. This creates the cloud-init user with SSH access, sends `onboarding-gw` / `onboarding-auth-url` to the internal onboarding endpoints, and carries the Graphiant lab profile — the lab's own `br0` / `br3001` / `br3002` / `br_trunk` bridges and the interface layout `deploy_gnos_edge.sh` builds.
+Use `configs/kvm_deploy_vedge_devtest_config.tfvars` with `mode = "devtest"`. This creates the cloud-init user with SSH access and sends the internal onboarding endpoints — set `onboarding_gateway` and `onboarding_auth_url`, or the apply fails a precondition rather than booting an edge that cannot onboard. It also, and carries the Graphiant lab profile — the lab's own `br0` / `br3001` / `br3002` / `br_trunk` bridges and the interface layout `deploy_gnos_edge.sh` builds.
 
 The interface layout is identical in both modes. Unlike the AWS and Azure modules, devtest adds no extra NIC — on KVM cloud-init is delivered by CD-ROM, not over the network.
 

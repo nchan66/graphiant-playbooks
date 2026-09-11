@@ -168,7 +168,7 @@ resource "libvirt_network" "wan" {
 resource "libvirt_network" "local_mgmt" {
   count = var.enable_local_mgmt ? 1 : 0
 
-  name      = "${var.vm_name}_lan_local-mgmt"
+  name      = "${var.vm_name}-local-mgmt"
   mode      = "none"
   autostart = true
 }
@@ -176,7 +176,7 @@ resource "libvirt_network" "local_mgmt" {
 resource "libvirt_network" "lan" {
   count = local.create_lan_nets ? var.lan_count : 0
 
-  name      = "${var.vm_name}_lan_${count.index + 1}"
+  name      = "${var.vm_name}-lan-${count.index + 1}"
   mode      = "none"
   autostart = true
 }
@@ -233,7 +233,7 @@ resource "libvirt_domain" "vedge" {
 
   nvram {
     template = var.uefi_nvram_template_path
-    file     = "/var/lib/libvirt/qemu/nvram/${var.vm_name}_VARS.fd"
+    file     = "${var.nvram_dir}/${var.vm_name}_VARS.fd"
   }
 
   cpu {
@@ -349,6 +349,10 @@ resource "libvirt_cloudinit_disk" "test_vm" {
     precondition {
       condition     = var.test_vm_ip_cidr != "" && var.test_vm_gateway != ""
       error_message = "deploy_test_vm = true requires test_vm_ip_cidr and test_vm_gateway (the vEdge LAN address configured in Graphiant Portal)."
+    }
+    precondition {
+      condition     = !local.create_lan_nets || var.lan_count > 0
+      error_message = "deploy_test_vm = true needs a LAN to attach to: set lan_count > 0, or set lan_bridge to an existing host bridge."
     }
   }
 }

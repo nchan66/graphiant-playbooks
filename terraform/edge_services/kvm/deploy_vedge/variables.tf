@@ -13,7 +13,7 @@ variable "mode" {
 }
 
 variable "libvirt_uri" {
-  description = "libvirt connection URI. Use 'qemu:///system' when Terraform runs on the hypervisor, or 'qemu+ssh://<user>@<host>/system' for a remote KVM host (the SSH user must be able to reach the system libvirt socket)."
+  description = "libvirt connection URI. Use 'qemu:///system' when Terraform runs on the hypervisor, or 'qemu+ssh://<user>@<host>/system' for a remote KVM host. Note the GNOS image at image_source is read by whichever machine runs Terraform."
   type        = string
   default     = "qemu:///system"
 }
@@ -105,6 +105,12 @@ variable "uefi_loader_path" {
   description = "Path on the hypervisor to the OVMF UEFI firmware code. GNOS boots via UEFI, not SeaBIOS. Debian/Ubuntu use /usr/share/OVMF/OVMF_CODE.fd; RHEL-family hosts typically use /usr/share/edk2/ovmf/OVMF_CODE.fd."
   type        = string
   default     = "/usr/share/OVMF/OVMF_CODE.fd"
+}
+
+variable "nvram_dir" {
+  description = "Directory the per-domain UEFI NVRAM file is written to. Debian and RHEL both use the default; change it if your hypervisor differs."
+  type        = string
+  default     = "/var/lib/libvirt/qemu/nvram"
 }
 
 variable "uefi_nvram_template_path" {

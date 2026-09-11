@@ -93,6 +93,7 @@ lan_count = 1
 # cpu_mode                 = "host-passthrough"
 # uefi_loader_path         = "/usr/share/OVMF/OVMF_CODE.fd"
 # uefi_nvram_template_path = "/usr/share/OVMF/OVMF_VARS.fd"
+# nvram_dir                = "/var/lib/libvirt/qemu/nvram"
 
 # Keep the VNC console on loopback and reach it over an SSH tunnel.
 vnc_listen_address = "127.0.0.1"
