@@ -2,7 +2,7 @@
 # Core
 # -----------------------------------------------------------------------------
 variable "mode" {
-  description = "Deployment mode: 'production' for customer-facing, 'devtest' for internal use with SSH access"
+  description = "Shape of the cloud-init handed to GNOS. This does NOT choose the GNOS build - the image at image_source does that. Use 'production' with a production qcow2; 'devtest' is for internal Graphiant use and additionally creates an SSH user."
   type        = string
   default     = "production"
 
@@ -59,9 +59,14 @@ variable "storage_pool" {
 }
 
 variable "graphnos_role" {
-  description = "GNOS device role announced in cloud-init. Edges onboard as 'cpe', which is what deploy_gnos_edge.sh sets on Graphiant hypervisors; 'gateway' and 'core' are the other roles used by that tooling."
+  description = "GNOS device role announced in cloud-init: 'cpe' for an edge, 'gateway' for a gateway."
   type        = string
   default     = "cpe"
+
+  validation {
+    condition     = contains(["cpe", "gateway"], var.graphnos_role)
+    error_message = "graphnos_role must be either 'cpe' or 'gateway'."
+  }
 }
 
 variable "token" {
@@ -147,31 +152,34 @@ variable "cloud_init_password" {
   default     = ""
 }
 
-variable "onboarding_auth_url" {
-  description = "Internal Graphiant OAuth authentication endpoint (devtest only)"
-  type        = string
-  default     = ""
-}
-
-variable "onboarding_gateway" {
-  description = "Internal Graphiant onboarding service hostname and port (devtest only)"
-  type        = string
-  default     = ""
-}
-
 # -----------------------------------------------------------------------------
 # Networking
 #
-# NIC order is a contract with GNOS, which assigns interface roles positionally:
+# NIC order is a contract with GNOS, which assigns interface roles positionally
+# by PCI address. The order differs by mode, because the kernel-managed
+# (non-VPP) 'mgmt' NIC only exists in devtest/devtest-persist images:
 #
-#   mgmt, wan1, local-mgmt, wan2..wanN, lan1..lanN
+#   devtest:    mgmt, wan1, local-mgmt, wan2..wanN, lan1..lanN
+#   production:       wan1, local-mgmt, wan2..wanN, lan1..lanN
 #
 # Each interface either attaches to a host bridge you name, or - when you leave
 # that setting empty - to a libvirt network this module creates. Leaving them all
 # empty deploys a working edge on a hypervisor with no networking prepared.
 # -----------------------------------------------------------------------------
+variable "onboarding_auth_url" {
+  description = "Internal Graphiant OAuth authentication endpoint (devtest only). Empty by default."
+  type        = string
+  default     = ""
+}
+
+variable "onboarding_gateway" {
+  description = "Internal Graphiant onboarding service hostname and port (devtest only). Empty by default."
+  type        = string
+  default     = ""
+}
+
 variable "mgmt_bridge" {
-  description = "Host bridge for the local management interface (NIC 0). Leave empty to have the module create a NAT network for it."
+  description = "devtest only. Host bridge for the kernel-managed (non-VPP) interface, NIC 0 - the SSH/console path. This is NOT the GNOS Local Mgmt VRF, which is always attached. Leave empty to have the module create a NAT network for it. Production GNOS images have no kernel-managed interface, so no mgmt NIC is attached and setting this with mode = production is rejected."
   type        = string
   default     = ""
 }
@@ -199,14 +207,8 @@ variable "lan_count" {
   }
 }
 
-variable "enable_local_mgmt" {
-  description = "Create the per-device local-mgmt network and attach it as the NIC immediately after the first ISP WAN. GNOS serves its local web server on this interface."
-  type        = bool
-  default     = true
-}
-
 variable "mgmt_network_prefix" {
-  description = "CIDR for the management NAT network. Only used when mgmt_bridge is empty."
+  description = "CIDR for the management NAT network. devtest only, and only used when mgmt_bridge is empty."
   type        = string
   default     = "10.30.0.0/24"
 }

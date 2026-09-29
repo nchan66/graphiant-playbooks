@@ -21,34 +21,45 @@ provider "libvirt" {
 locals {
   is_devtest = var.mode == "devtest"
 
+  # The kernel-managed (non-VPP) NIC exists only in devtest/devtest-persist GNOS
+  # images; production images do not have one. GNOS assigns VPP roles by PCI
+  # order starting at the first non-kernel-managed NIC, so attaching a mgmt NIC
+  # in production would be taken as the first ISP WAN and shift every other role
+  # down by one. It is therefore attached in devtest mode only.
+  attach_mgmt_nic = local.is_devtest
+
   # An interface attaches to the host bridge you name, or - if you leave it
   # empty - to a libvirt network this module creates.
-  create_mgmt_net = var.mgmt_bridge == ""
+  create_mgmt_net = local.attach_mgmt_nic && var.mgmt_bridge == ""
   create_wan_net  = length(var.wan_bridges) == 0
   create_lan_nets = var.lan_bridge == ""
 
-  # NIC order is a contract with GNOS, which assigns interface roles positionally:
+  # NIC order is a contract with GNOS, which assigns interface roles positionally
+  # by PCI address. It differs by mode, because of the kernel-managed NIC above:
   #
-  #   mgmt, wan1, local-mgmt, wan2..wanN, lan1..lanN
+  #   devtest:    mgmt, wan1, local-mgmt, wan2..wanN, lan1..lanN
+  #   production:       wan1, local-mgmt, wan2..wanN, lan1..lanN
   #
   # The first ISP WAN is the VPP interface oss-agent uses to onboard, and GNOS
-  # serves its local web server on the local-mgmt interface.
+  # serves its local web server on the local-mgmt interface. Anything attached
+  # after those two is a generic VPP interface to GNOS - the wan2../lan.. split
+  # below is this module's convention, and the role is assigned in the Portal.
   nics = concat(
-    [{
+    local.attach_mgmt_nic ? [{
       label      = "mgmt"
       bridge     = local.create_mgmt_net ? null : var.mgmt_bridge
       network_id = local.create_mgmt_net ? libvirt_network.mgmt[0].id : null
-    }],
+    }] : [],
     [{
       label      = "wan1"
       bridge     = local.create_wan_net ? null : var.wan_bridges[0]
       network_id = local.create_wan_net ? libvirt_network.wan[0].id : null
     }],
-    var.enable_local_mgmt ? [{
+    [{
       label      = "local-mgmt"
       bridge     = null
-      network_id = libvirt_network.local_mgmt[0].id
-    }] : [],
+      network_id = libvirt_network.local_mgmt.id
+    }],
     local.create_wan_net ? [] : [
       for i, b in slice(var.wan_bridges, 1, length(var.wan_bridges)) : {
         label      = "wan${i + 2}"
@@ -65,8 +76,9 @@ locals {
 
   lan_network_id = local.create_lan_nets ? try(libvirt_network.lan[0].id, null) : null
 
-  # Cloud-init user data, matching the graphnos block deploy_gnos_edge.sh writes:
-  # role, then the onboarding endpoints (devtest only), then the token.
+  # Cloud-init user data: the graphnos block GNOS reads at first boot. devtest
+  # additionally creates an SSH user and carries the onboarding endpoints, which
+  # are empty unless set, in which case the image uses its own.
   user_data_production = <<-USERDATA
     #cloud-config
 
@@ -166,8 +178,6 @@ resource "libvirt_network" "wan" {
 }
 
 resource "libvirt_network" "local_mgmt" {
-  count = var.enable_local_mgmt ? 1 : 0
-
   name      = "${var.vm_name}-local-mgmt"
   mode      = "none"
   autostart = true
@@ -183,7 +193,7 @@ resource "libvirt_network" "lan" {
 
 # -----------------------------------------------------------------------------
 # Volumes — the GNOS qcow2 is imported once, then backed by a thin overlay per
-# vEdge, the same layout the Graphiant hypervisor tooling uses with virt-install
+# vEdge, so one imported image can back several edges
 # -----------------------------------------------------------------------------
 resource "libvirt_volume" "gnos_base" {
   count = var.base_volume_id == "" ? 1 : 0
@@ -198,6 +208,10 @@ resource "libvirt_volume" "gnos_base" {
       condition     = var.image_source != ""
       error_message = "Set image_source to the GNOS qcow2 (hypervisor path or HTTP(S) URL), or base_volume_id to reuse an imported base volume."
     }
+    precondition {
+      condition     = var.mode != "production" || length(regexall("(?i)devtest", var.image_source)) == 0
+      error_message = "mode is 'production' but image_source looks like a devtest image. The mode only shapes cloud-init - the image decides which GNOS build boots. Use a production qcow2, or set mode = \"devtest\"."
+    }
   }
 }
 
@@ -209,18 +223,26 @@ resource "libvirt_volume" "vedge" {
   size           = var.disk_size_gb * 1024 * 1024 * 1024
 }
 
-# Delivered as a CD-ROM, matching virt-install --cdrom on Graphiant hypervisors.
+# Delivered as a CD-ROM, which is how GNOS expects cloud-init on KVM.
 resource "libvirt_cloudinit_disk" "vedge" {
   name      = "${var.vm_name}-cloudinit.iso"
   pool      = var.storage_pool
   user_data = local.user_data
+
+  # Fixed placeholder hostname: the real device name comes from the Graphiant
+  # Portal, and a per-VM hostname here only produces "unable to resolve host"
+  # noise during boot.
+  meta_data = <<-METADATA
+    local-hostname: gnos
+    instance-id: ${var.vm_name}
+  METADATA
 }
 
 # -----------------------------------------------------------------------------
 # vEdge domain
 #
-# GNOS boot requirements, mirrored from the Graphiant hypervisor virt-install:
-# UEFI/OVMF firmware, emulated TPM 2.0, q35, host CPU passthrough.
+# GNOS boot requirements: UEFI/OVMF firmware, emulated TPM 2.0, q35 machine
+# type and host CPU passthrough.
 # -----------------------------------------------------------------------------
 resource "libvirt_domain" "vedge" {
   name      = var.vm_name
@@ -281,8 +303,8 @@ resource "libvirt_domain" "vedge" {
 
   lifecycle {
     precondition {
-      condition     = !local.is_devtest || var.onboarding_gateway != ""
-      error_message = "devtest mode requires onboarding_gateway to be set."
+      condition     = local.is_devtest || var.mgmt_bridge == ""
+      error_message = "mgmt_bridge is devtest-only. Production GNOS images have no kernel-managed (non-VPP) interface, so this module attaches no mgmt NIC in production and NIC 0 is the first ISP WAN. Leave mgmt_bridge empty and put your uplink in wan_bridges."
     }
   }
 }
