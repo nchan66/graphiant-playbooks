@@ -167,13 +167,13 @@ variable "cloud_init_password" {
 # empty deploys a working edge on a hypervisor with no networking prepared.
 # -----------------------------------------------------------------------------
 variable "onboarding_auth_url" {
-  description = "Internal Graphiant OAuth authentication endpoint (devtest only). Empty by default."
+  description = "Onboarding OAuth endpoint. Required in devtest, unused in production."
   type        = string
   default     = ""
 }
 
 variable "onboarding_gateway" {
-  description = "Internal Graphiant onboarding service hostname and port (devtest only). Empty by default."
+  description = "Onboarding service host and port. Required in devtest, unused in production."
   type        = string
   default     = ""
 }

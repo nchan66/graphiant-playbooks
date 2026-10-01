@@ -2,7 +2,7 @@
 #
 # Devtest differs from production in three ways:
 #   - cloud-init creates an SSH user
-#   - cloud-init carries the onboarding endpoints, if you set them
+#   - cloud-init carries the onboarding endpoints, which you must set
 #   - a kernel-managed mgmt NIC is attached, so the interface order gains a
 #     leading `mgmt` and NIC 0 is no longer the first ISP WAN
 #
@@ -33,10 +33,9 @@ cloud_init_username = "gnos"
 cloud_init_password = ""
 
 # =============================================================================
-# Onboarding endpoints (devtest only)
+# Onboarding endpoints (devtest only) - both required
 #
-# Empty means the GNOS image uses its own. Set both to aim the edge at a
-# specific environment.
+# Set these to the environment you are onboarding to.
 # =============================================================================
 onboarding_auth_url = ""
 onboarding_gateway  = ""

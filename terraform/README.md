@@ -734,7 +734,7 @@ terraform destroy -var-file="configs/kvm_deploy_vedge_config.tfvars"
 
 Use `configs/kvm_deploy_vedge_devtest_config.tfvars` with `mode = "devtest"`. Compared with production this adds a cloud-init user with SSH access, and attaches the kernel-managed mgmt NIC that devtest GNOS images have — so the interface order gains a leading `mgmt` and NIC 0 is no longer the first ISP WAN. It requires a devtest GNOS image: the image decides which build boots, not this setting.
 
-Devtest cloud-init also carries `onboarding_auth_url` / `onboarding_gateway`, empty by default so the GNOS image uses its own. Set both to aim the edge at an internal environment. Production cloud-init carries neither.
+Devtest cloud-init also carries `onboarding_auth_url` / `onboarding_gateway`. Both are required - devtest images have no onboarding endpoints of their own - and `terraform plan` fails if either is empty. Production cloud-init carries neither.
 
 
 

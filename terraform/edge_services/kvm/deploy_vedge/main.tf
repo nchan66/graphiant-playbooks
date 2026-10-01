@@ -67,8 +67,7 @@ locals {
   lan_network_id = local.create_lan_nets ? try(libvirt_network.lan[0].id, null) : null
 
   # Cloud-init user data: the graphnos block GNOS reads at first boot. devtest
-  # additionally creates an SSH user and carries the onboarding endpoints, which
-  # are empty unless set, in which case the image uses its own.
+  # additionally creates an SSH user and carries the onboarding endpoints.
   user_data_production = <<-USERDATA
     #cloud-config
 
@@ -77,20 +76,15 @@ locals {
       token: "${var.token}"
   USERDATA
 
-  # Omitted when unset: an empty value is YAML null, which fails cloud-init
-  # schema validation.
-  onboarding_lines = join("", [
-    var.onboarding_auth_url == "" ? "" : "\n  onboarding-auth-url: ${var.onboarding_auth_url}",
-    var.onboarding_gateway == "" ? "" : "\n  onboarding-gw: ${var.onboarding_gateway}",
-  ])
-
   ssh_key_lines = var.ssh_public_key == "" ? "" : "\n    ssh-authorized-keys:\n      - ${var.ssh_public_key}"
 
   user_data_devtest = <<-USERDATA
     #cloud-config
 
     graphnos:
-      role: ${var.graphnos_role}${local.onboarding_lines}
+      role: ${var.graphnos_role}
+      onboarding-auth-url: ${var.onboarding_auth_url}
+      onboarding-gw: ${var.onboarding_gateway}
       token: "${var.token}"
 
     users:
@@ -224,6 +218,13 @@ resource "libvirt_cloudinit_disk" "vedge" {
     local-hostname: gnos
     instance-id: ${var.vm_name}
   METADATA
+
+  lifecycle {
+    precondition {
+      condition     = !local.is_devtest || (var.onboarding_auth_url != "" && var.onboarding_gateway != "")
+      error_message = "devtest requires onboarding_auth_url and onboarding_gateway. Devtest GNOS images carry no onboarding endpoints of their own."
+    }
+  }
 }
 
 # -----------------------------------------------------------------------------
