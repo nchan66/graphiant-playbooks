@@ -21,11 +21,8 @@ provider "libvirt" {
 locals {
   is_devtest = var.mode == "devtest"
 
-  # The kernel-managed (non-VPP) NIC exists only in devtest/devtest-persist GNOS
-  # images; production images do not have one. GNOS assigns VPP roles by PCI
-  # order starting at the first non-kernel-managed NIC, so attaching a mgmt NIC
-  # in production would be taken as the first ISP WAN and shift every other role
-  # down by one. It is therefore attached in devtest mode only.
+  # Only devtest images have a kernel-managed NIC; in production it would be
+  # read as the first ISP WAN and shift every other role down one.
   attach_mgmt_nic = local.is_devtest
 
   # An interface attaches to the host bridge you name, or - if you leave it
@@ -34,16 +31,9 @@ locals {
   create_wan_net  = length(var.wan_bridges) == 0
   create_lan_nets = var.lan_bridge == ""
 
-  # NIC order is a contract with GNOS, which assigns interface roles positionally
-  # by PCI address. It differs by mode, because of the kernel-managed NIC above:
-  #
+  # GNOS assigns interface roles by PCI order, so this order is a contract:
   #   devtest:    mgmt, wan1, local-mgmt, wan2..wanN, lan1..lanN
   #   production:       wan1, local-mgmt, wan2..wanN, lan1..lanN
-  #
-  # The first ISP WAN is the VPP interface oss-agent uses to onboard, and GNOS
-  # serves its local web server on the local-mgmt interface. Anything attached
-  # after those two is a generic VPP interface to GNOS - the wan2../lan.. split
-  # below is this module's convention, and the role is assigned in the Portal.
   nics = concat(
     local.attach_mgmt_nic ? [{
       label      = "mgmt"
@@ -87,13 +77,20 @@ locals {
       token: "${var.token}"
   USERDATA
 
+  # Omitted when unset: an empty value is YAML null, which fails cloud-init
+  # schema validation.
+  onboarding_lines = join("", [
+    var.onboarding_auth_url == "" ? "" : "\n  onboarding-auth-url: ${var.onboarding_auth_url}",
+    var.onboarding_gateway == "" ? "" : "\n  onboarding-gw: ${var.onboarding_gateway}",
+  ])
+
+  ssh_key_lines = var.ssh_public_key == "" ? "" : "\n    ssh-authorized-keys:\n      - ${var.ssh_public_key}"
+
   user_data_devtest = <<-USERDATA
     #cloud-config
 
     graphnos:
-      role: ${var.graphnos_role}
-      onboarding-auth-url: ${var.onboarding_auth_url}
-      onboarding-gw: ${var.onboarding_gateway}
+      role: ${var.graphnos_role}${local.onboarding_lines}
       token: "${var.token}"
 
     users:
@@ -102,18 +99,15 @@ locals {
         sudo: ["ALL=(ALL) NOPASSWD:ALL"]
         lock_passwd: false
         groups: sudo
-        shell: /bin/bash
-        ssh-authorized-keys:
-          - ${var.ssh_public_key}
+        shell: /bin/bash${local.ssh_key_lines}
   USERDATA
 
   user_data = local.is_devtest ? local.user_data_devtest : local.user_data_production
 
   base_volume_id = var.base_volume_id != "" ? var.base_volume_id : try(libvirt_volume.gnos_base[0].id, "")
 
-  # Two things the provider cannot express: the cloud-init CD-ROM lands on IDE,
-  # which q35 has no controller for, and a file disk carries no format, so
-  # libvirt assumes raw and the guest never boots.
+  # The provider cannot set either of these: q35 has no IDE controller for the
+  # CD-ROM, and a file disk carries no format so libvirt would assume raw.
   domain_xslt = <<-XSLT
     <?xml version="1.0" ?>
     <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
@@ -136,12 +130,9 @@ locals {
 }
 
 # -----------------------------------------------------------------------------
-# Networks
-#
-# Created only for interfaces with no host bridge. mgmt and WAN are NAT so the
-# vEdge can reach the backbone unaided; LAN is isolated so the vEdge is the only
-# way off it. LLDP on an isolated LAN needs group_fwd_mask set by hand - see the
-# README.
+# Networks — created only for interfaces with no host bridge. mgmt and WAN are
+# NAT so the vEdge can reach the backbone; LAN is isolated so the vEdge is the
+# only way off it.
 # -----------------------------------------------------------------------------
 resource "libvirt_network" "mgmt" {
   count = local.create_mgmt_net ? 1 : 0
@@ -192,8 +183,7 @@ resource "libvirt_network" "lan" {
 }
 
 # -----------------------------------------------------------------------------
-# Volumes — the GNOS qcow2 is imported once, then backed by a thin overlay per
-# vEdge, so one imported image can back several edges
+# Volumes — the GNOS qcow2 is imported once and backed by a thin overlay.
 # -----------------------------------------------------------------------------
 resource "libvirt_volume" "gnos_base" {
   count = var.base_volume_id == "" ? 1 : 0
@@ -229,9 +219,7 @@ resource "libvirt_cloudinit_disk" "vedge" {
   pool      = var.storage_pool
   user_data = local.user_data
 
-  # Fixed placeholder hostname: the real device name comes from the Graphiant
-  # Portal, and a per-VM hostname here only produces "unable to resolve host"
-  # noise during boot.
+  # Placeholder hostname; the real device name comes from the Graphiant Portal.
   meta_data = <<-METADATA
     local-hostname: gnos
     instance-id: ${var.vm_name}
@@ -239,10 +227,8 @@ resource "libvirt_cloudinit_disk" "vedge" {
 }
 
 # -----------------------------------------------------------------------------
-# vEdge domain
-#
-# GNOS boot requirements: UEFI/OVMF firmware, emulated TPM 2.0, q35 machine
-# type and host CPU passthrough.
+# vEdge domain — GNOS needs UEFI/OVMF, an emulated TPM 2.0, q35 and host CPU
+# passthrough.
 # -----------------------------------------------------------------------------
 resource "libvirt_domain" "vedge" {
   name      = var.vm_name
@@ -268,8 +254,8 @@ resource "libvirt_domain" "vedge" {
     model           = "tpm-crb"
   }
 
-  # Attach by path, not volume_id: <disk type='volume'> stops libvirt labelling
-  # the qcow2 backing chain, so QEMU cannot open the backing file.
+  # By path, not volume_id: type='volume' stops libvirt labelling the backing
+  # chain, and QEMU then cannot open it.
   disk {
     file = libvirt_volume.vedge.id
   }
@@ -311,8 +297,7 @@ resource "libvirt_domain" "vedge" {
 
 # -----------------------------------------------------------------------------
 # Test VM (optional) — a Debian cloud image on the LAN, routing via the vEdge.
-# The vEdge LAN address is set in the Graphiant Portal and unknown to Terraform,
-# so test_vm_gateway must be supplied: deploy this after the edge has onboarded.
+# Supply test_vm_gateway: deploy it after the edge has onboarded.
 # -----------------------------------------------------------------------------
 resource "libvirt_volume" "test_vm_base" {
   count = var.deploy_test_vm ? 1 : 0
@@ -353,8 +338,7 @@ resource "libvirt_cloudinit_disk" "test_vm" {
           - ${var.test_vm_ssh_public_key}
   USERDATA
 
-  # Static addressing: the LAN has no DHCP server, and the default route must
-  # point at the vEdge rather than anything libvirt provides.
+  # Static: the LAN has no DHCP, and the route must point at the vEdge.
   network_config = <<-NETCFG
     version: 2
     ethernets:
